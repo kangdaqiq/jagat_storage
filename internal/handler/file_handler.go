@@ -131,6 +131,9 @@ func (h *FileHandler) ListFiles(c *gin.Context) {
 	for i := range files {
 		files[i].ViewURL = fmt.Sprintf("%s/api/v1/files/%s/view", baseURL, files[i].ID)
 		files[i].DownloadURL = fmt.Sprintf("%s/api/v1/files/%s/download", baseURL, files[i].ID)
+		if files[i].ThumbnailName != "" || storage.IsImageFile(files[i].MimeType, files[i].Extension) {
+			files[i].ThumbnailURL = fmt.Sprintf("%s/api/v1/files/%s/thumbnail", baseURL, files[i].ID)
+		}
 	}
 
 	utils.SendSuccess(c, http.StatusOK, "Berhasil memuat daftar file", model.ListFilesResponse{
@@ -158,8 +161,33 @@ func (h *FileHandler) GetFileInfo(c *gin.Context) {
 	copied := *meta
 	copied.ViewURL = fmt.Sprintf("%s/api/v1/files/%s/view", baseURL, copied.ID)
 	copied.DownloadURL = fmt.Sprintf("%s/api/v1/files/%s/download", baseURL, copied.ID)
+	if copied.ThumbnailName != "" || storage.IsImageFile(copied.MimeType, copied.Extension) {
+		copied.ThumbnailURL = fmt.Sprintf("%s/api/v1/files/%s/thumbnail", baseURL, copied.ID)
+	}
 
 	utils.SendSuccess(c, http.StatusOK, "Detail metadata file", copied)
+}
+
+// ViewThumbnail menampilkan gambar thumbnail untuk berkas video atau gambar
+func (h *FileHandler) ViewThumbnail(c *gin.Context) {
+	id := c.Param("id")
+	meta, err := h.store.GetFile(id)
+	if err != nil {
+		utils.SendError(c, http.StatusNotFound, "File tidak ditemukan", nil)
+		return
+	}
+
+	thumbPath, mimeType, err := h.store.GetPhysicalThumbnailPath(meta)
+	if err != nil {
+		utils.SendError(c, http.StatusNotFound, "Thumbnail tidak tersedia untuk berkas ini", nil)
+		return
+	}
+
+	c.Header("Content-Type", mimeType)
+	c.Header("Content-Disposition", fmt.Sprintf("inline; filename=\"thumb_%s.jpg\"", meta.ID))
+	c.Header("Cache-Control", "public, max-age=86400")
+
+	http.ServeFile(c.Writer, c.Request, thumbPath)
 }
 
 // ViewFile menampilkan atau streaming file secara inline (cocok untuk Glide, Coil, ExoPlayer Android)

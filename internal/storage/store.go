@@ -7,9 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"mime/multipart"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -21,8 +23,9 @@ import (
 )
 
 var (
-	ErrFileNotFound = errors.New("file not found")
-	ErrInvalidPath  = errors.New("invalid file path")
+	ErrFileNotFound      = errors.New("file not found")
+	ErrThumbnailNotFound = errors.New("thumbnail not found")
+	ErrInvalidPath       = errors.New("invalid file path")
 )
 
 type FileStore struct {
@@ -167,19 +170,38 @@ func (s *FileStore) SaveUploadedFile(fileHeader *multipart.FileHeader, folder st
 	viewURL := fmt.Sprintf("%s/api/v1/files/%s/view", hostURL, fileID)
 	downloadURL := fmt.Sprintf("%s/api/v1/files/%s/download", hostURL, fileID)
 
+	var thumbName string
+	var thumbURL string
+
+	if IsVideoFile(mimeType, ext) {
+		candidateThumb := fmt.Sprintf("%s_thumb.jpg", fileID)
+		thumbDestPath := filepath.Join(targetDir, candidateThumb)
+		if err := GenerateVideoThumbnail(destPath, thumbDestPath); err != nil {
+			log.Printf("[Thumbnail] Info: Gagal membuat thumbnail video %s: %v", origName, err)
+		} else {
+			thumbName = candidateThumb
+			thumbURL = fmt.Sprintf("%s/api/v1/files/%s/thumbnail", hostURL, fileID)
+			log.Printf("[Thumbnail] Berhasil membuat thumbnail video: %s", candidateThumb)
+		}
+	} else if IsImageFile(mimeType, ext) {
+		thumbURL = fmt.Sprintf("%s/api/v1/files/%s/thumbnail", hostURL, fileID)
+	}
+
 	meta := model.FileMeta{
-		ID:           fileID,
-		OriginalName: origName,
-		StoredName:   storedName,
-		Folder:       cleanFolder,
-		Size:         copiedSize,
-		HumanSize:    utils.FormatFileSize(copiedSize),
-		MimeType:     mimeType,
-		Extension:    ext,
-		ChecksumSHA:  shaChecksum,
-		ViewURL:      viewURL,
-		DownloadURL:  downloadURL,
-		CreatedAt:    time.Now().UTC(),
+		ID:            fileID,
+		OriginalName:  origName,
+		StoredName:    storedName,
+		ThumbnailName: thumbName,
+		Folder:        cleanFolder,
+		Size:          copiedSize,
+		HumanSize:     utils.FormatFileSize(copiedSize),
+		MimeType:      mimeType,
+		Extension:     ext,
+		ChecksumSHA:   shaChecksum,
+		ViewURL:       viewURL,
+		DownloadURL:   downloadURL,
+		ThumbnailURL:  thumbURL,
+		CreatedAt:     time.Now().UTC(),
 	}
 
 	s.mu.Lock()
@@ -203,6 +225,26 @@ func (s *FileStore) GetFile(id string) (*model.FileMeta, error) {
 
 func (s *FileStore) GetPhysicalPath(meta *model.FileMeta) string {
 	return filepath.Join(s.baseDir, meta.Folder, meta.StoredName)
+}
+
+// GetPhysicalThumbnailPath mengambil path file thumbnail di disk
+func (s *FileStore) GetPhysicalThumbnailPath(meta *model.FileMeta) (string, string, error) {
+	if meta.ThumbnailName != "" {
+		p := filepath.Join(s.baseDir, meta.Folder, meta.ThumbnailName)
+		if _, err := os.Stat(p); err == nil {
+			return p, "image/jpeg", nil
+		}
+	}
+
+	// Jika file asli adalah gambar, langsung gunakan file aslinya
+	if IsImageFile(meta.MimeType, meta.Extension) {
+		p := filepath.Join(s.baseDir, meta.Folder, meta.StoredName)
+		if _, err := os.Stat(p); err == nil {
+			return p, meta.MimeType, nil
+		}
+	}
+
+	return "", "", ErrThumbnailNotFound
 }
 
 func (s *FileStore) ListFiles(folder, search string, page, limit int) ([]model.FileMeta, int) {
@@ -260,8 +302,58 @@ func (s *FileStore) DeleteFile(id string) error {
 		return err
 	}
 
+	// Hapus thumbnail jika ada
+	if meta.ThumbnailName != "" {
+		thumbPath := filepath.Join(s.baseDir, meta.Folder, meta.ThumbnailName)
+		_ = os.Remove(thumbPath)
+	}
+
 	delete(s.files, id)
 	_ = s.saveMetadata()
+	return nil
+}
+
+// IsVideoFile mengecek apakah MIME type atau ekstensi adalah format video
+func IsVideoFile(mimeType, ext string) bool {
+	if strings.HasPrefix(strings.ToLower(mimeType), "video/") {
+		return true
+	}
+	switch strings.ToLower(ext) {
+	case ".mp4", ".mov", ".mkv", ".webm", ".avi", ".3gp", ".flv", ".wmv", ".m4v":
+		return true
+	}
+	return false
+}
+
+// IsImageFile mengecek apakah MIME type atau ekstensi adalah format gambar
+func IsImageFile(mimeType, ext string) bool {
+	if strings.HasPrefix(strings.ToLower(mimeType), "image/") {
+		return true
+	}
+	switch strings.ToLower(ext) {
+	case ".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".svg":
+		return true
+	}
+	return false
+}
+
+// GenerateVideoThumbnail mengekstrak 1 frame dari video menggunakan ffmpeg
+func GenerateVideoThumbnail(videoPath, thumbPath string) error {
+	ffmpegPath, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		return fmt.Errorf("ffmpeg tidak ditemukan di PATH: %w", err)
+	}
+
+	// Coba ambil frame di detik ke-1 dengan resolusi proporsional (maks lebar 640px)
+	cmd := exec.Command(ffmpegPath, "-y", "-ss", "00:00:01", "-i", videoPath, "-vframes", "1", "-vf", "scale='min(640,iw)':-2", "-q:v", "3", thumbPath)
+	if _, err := cmd.CombinedOutput(); err != nil {
+		// Jika durasi video sangat pendek (<1 detik), coba ambil frame di detik 0
+		cmdRetry := exec.Command(ffmpegPath, "-y", "-ss", "00:00:00", "-i", videoPath, "-vframes", "1", "-vf", "scale='min(640,iw)':-2", "-q:v", "3", thumbPath)
+		if out2, err2 := cmdRetry.CombinedOutput(); err2 != nil {
+			return fmt.Errorf("ffmpeg gagal: %v (detail: %s)", err2, string(out2))
+		}
+	}
+
 	return nil
 }
 

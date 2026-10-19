@@ -46,6 +46,7 @@ func main() {
 				"list_files":      "GET /api/v1/files?folder=&search=&page=1&limit=20",
 				"file_info":       "GET /api/v1/files/:id",
 				"preview_stream":  "GET /api/v1/files/:id/view",
+				"thumbnail":       "GET /api/v1/files/:id/thumbnail",
 				"download":        "GET /api/v1/files/:id/download",
 				"delete":          "DELETE /api/v1/files/:id",
 			},
@@ -76,8 +77,9 @@ func main() {
 			files.GET("", fileH.ListFiles)
 			files.GET("/:id", fileH.GetFileInfo)
 
-			// Streaming & Download
+			// Streaming & Download & Thumbnail
 			files.GET("/:id/view", downloadAuth, fileH.ViewFile)
+			files.GET("/:id/thumbnail", downloadAuth, fileH.ViewThumbnail)
 			files.GET("/:id/download", downloadAuth, fileH.DownloadFile)
 
 			// Delete

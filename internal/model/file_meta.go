@@ -12,10 +12,12 @@ type FileMeta struct {
 	HumanSize    string    `json:"human_size"`
 	MimeType     string    `json:"mime_type"`
 	Extension    string    `json:"extension"`
-	ChecksumSHA  string    `json:"checksum_sha256,omitempty"`
-	ViewURL      string    `json:"view_url"`
-	DownloadURL  string    `json:"download_url"`
-	CreatedAt    time.Time `json:"created_at"`
+	ChecksumSHA   string    `json:"checksum_sha256,omitempty"`
+	ThumbnailName string    `json:"thumbnail_name,omitempty"`
+	ViewURL       string    `json:"view_url"`
+	DownloadURL   string    `json:"download_url"`
+	ThumbnailURL  string    `json:"thumbnail_url,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
 }
 
 // UploadResponse respon standar untuk file upload

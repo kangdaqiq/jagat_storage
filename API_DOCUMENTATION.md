@@ -124,6 +124,7 @@ curl -X POST "http://localhost:8085/api/v1/files/upload" \
     "checksum_sha256": "d4e9cc44097204f8da3ada79816c38566cc338d39628c818fcb8129c6c4ef4eb",
     "view_url": "http://10.0.2.2:8085/api/v1/files/8693267a-dfbb-4368-8813-d63e338252f9/view",
     "download_url": "http://10.0.2.2:8085/api/v1/files/8693267a-dfbb-4368-8813-d63e338252f9/download",
+    "thumbnail_url": "http://10.0.2.2:8085/api/v1/files/8693267a-dfbb-4368-8813-d63e338252f9/thumbnail",
     "created_at": "2026-10-19T15:24:20.033Z"
   }
 }
@@ -238,7 +239,22 @@ Menampilkan berkas secara langsung atau streaming media (audio/video).
 
 ---
 
-### 4.7 Unduh File (Download Attachment)
+### 4.7 Thumbnail Gambar & Video (Inline / Cover)
+Mengambil gambar thumbnail ringan (JPEG) untuk video maupun gambar. Sangat optimal untuk galeri Web (`<img src="...">` / `<video poster="...">`) dan list/grid di Android Compose.
+
+- **URL**: `/api/v1/files/:id/thumbnail`
+- **Method**: `GET`
+- **Auth**: Mengikuti aturan download (`REQUIRE_AUTH_FOR_DOWNLOAD`, default: publik)
+- **Header Respons**:
+  - `Content-Type`: `image/jpeg` (atau MIME gambar asli jika sumbernya gambar)
+  - `Cache-Control`: `public, max-age=86400`
+- **Catatan Teknis**:
+  - Untuk berkas **video** (`.mp4`, `.mov`, `.webm`, dll): server Go otomatis memanggil `ffmpeg` untuk memotong 1 frame pada detik ke-1 dan menyimpannya sebagai thumbnail ringan (resolusi maks lebar 640px). Jika di server belum terinstal `ffmpeg`, server tetap berfungsi normal tanpa thumbnail.
+  - Untuk berkas **gambar** (`.jpg`, `.png`, dll): endpoint ini langsung mengembalikan berkas gambar tersebut.
+
+---
+
+### 4.8 Unduh File (Download Attachment)
 Memaksa browser atau Android DownloadManager untuk mengunduh berkas sebagai attachment.
 
 - **URL**: `/api/v1/files/:id/download`
@@ -248,8 +264,8 @@ Memaksa browser atau Android DownloadManager untuk mengunduh berkas sebagai atta
 
 ---
 
-### 4.8 Hapus File
-Menghapus berkas dari disk storage dan database metadata.
+### 4.9 Hapus File
+Menghapus berkas dari disk storage dan database metadata (termasuk thumbnail terkait jika ada).
 
 - **URL**: `/api/v1/files/:id`
 - **Method**: `DELETE`
@@ -286,7 +302,8 @@ data class FileMeta(
     val human_size: String,
     val mime_type: String,
     val view_url: String,
-    val download_url: String
+    val download_url: String,
+    val thumbnail_url: String? = null
 )
 ```
 
@@ -345,29 +362,36 @@ suspend fun uploadImageFile(service: StorageApiService, localFile: File) {
     if (response.isSuccessful && response.body()?.success == true) {
         val uploadedFile = response.body()?.data
         println("Upload sukses! URL Gambar: ${uploadedFile?.view_url}")
+        println("URL Thumbnail: ${uploadedFile?.thumbnail_url}")
     } else {
         println("Gagal upload: ${response.errorBody()?.string()}")
     }
 }
 ```
 
-### 5.4 Menampilkan Gambar dengan Glide atau Coil
+### 5.4 Menampilkan Gambar / Cover Video (Android & Web)
 
-Cukup gunakan `view_url` langsung ke ImageView:
+Cukup gunakan `thumbnail_url ?: view_url`:
 
 ```kotlin
-// Menggunakan Glide
-Glide.with(context)
-    .load("http://10.0.2.2:8085/api/v1/files/8693267a-dfbb-4368-8813-d63e338252f9/view")
-    .placeholder(R.drawable.ic_placeholder)
-    .into(imageView)
-
-// Atau menggunakan Coil (Jetpack Compose)
+// Android Compose (Coil) — bisa menampilkan cover video maupun gambar langsung!
 AsyncImage(
-    model = fileMeta.view_url,
-    contentDescription = "Gambar",
-    modifier = Modifier.fillMaxWidth()
+    model = fileMeta.thumbnail_url ?: fileMeta.view_url,
+    contentDescription = "Cover Media",
+    contentScale = ContentScale.Crop,
+    modifier = Modifier.fillMaxWidth().height(200.dp)
 )
+```
+
+```html
+<!-- Web Dashboard / Galeri HTML -->
+<!-- Menampilkan cover video dengan poster -->
+<video controls poster="https://storage.domainanda.com/api/v1/files/VIDEO_ID/thumbnail">
+    <source src="https://storage.domainanda.com/api/v1/files/VIDEO_ID/view" type="video/mp4">
+</video>
+
+<!-- Atau di kartu galeri Web -->
+<img src="https://storage.domainanda.com/api/v1/files/VIDEO_ID/thumbnail" alt="Thumbnail Video" />
 ```
 
 ---
