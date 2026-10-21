@@ -19,21 +19,24 @@ Saat menghubungkan aplikasi Android ke server lokal di komputer pengembang:
 
 ---
 
-## 🔐 2. Autentikasi
+## 🔐 2. Autentikasi & Multi-User
 
-Autentikasi menggunakan **API Key** yang dapat dikirimkan melalui salah satu header berikut:
+Server mendukung arsitektur **Multi-User** di mana setiap pengguna memiliki **API Key unik** dan **Batas Kuota Penyimpanan (Storage Quota)** masing-masing.
 
+Header yang didukung:
 ```http
-X-API-Key: android-storage-secret-key
+X-API-Key: <api_key_user>
 ```
 atau:
 ```http
-Authorization: Bearer android-storage-secret-key
+Authorization: Bearer <api_key_user>
 ```
+*(Bisa juga via parameter query `?api_key=<key>` untuk link langsung/streaming).*
 
-* Nilai default API Key: `android-storage-secret-key` (dapat diubah di file `.env`).
-* Upload dan Hapus file memerlukan API Key.
-* Preview & Download dapat diakses secara publik (direct URL) agar kompatibel dengan **Glide**, **Coil**, dan **ExoPlayer**.
+* **Isolasi Berkas**: Setiap user hanya dapat melihat (`GET /api/v1/files`) dan menghapus (`DELETE /api/v1/files/:id`) berkas milik mereka sendiri.
+* **Akun Admin Utama**: Dibuat otomatis saat inisialisasi menggunakan nilai `ADMIN_API_KEY` atau `API_KEY` di file `.env`. Admin memiliki hak untuk membuat user baru, mengatur batas kuota, serta melihat semua file.
+* **Storage Quota Enforcement**: Jika ukuran file yang diunggah melebihi sisa kuota user, server akan menolak dengan status HTTP `413 Payload Too Large` beserta rincian kuota.
+* **Preview & Download Publik**: Direct URL preview/download dapat diakses tanpa auth jika `REQUIRE_AUTH_FOR_DOWNLOAD=false` agar kompatibel dengan **Glide**, **Coil**, dan **ExoPlayer**.
 
 ---
 
@@ -265,7 +268,7 @@ Memaksa browser atau Android DownloadManager untuk mengunduh berkas sebagai atta
 ---
 
 ### 4.9 Hapus File
-Menghapus berkas dari disk storage dan database metadata (termasuk thumbnail terkait jika ada).
+Menghapus berkas dari disk storage dan database metadata (termasuk thumbnail terkait jika ada) serta mengembalikan kapasitas kuota user.
 
 - **URL**: `/api/v1/files/:id`
 - **Method**: `DELETE`
@@ -276,10 +279,88 @@ Menghapus berkas dari disk storage dan database metadata (termasuk thumbnail ter
   "success": true,
   "message": "File berhasil dihapus",
   "data": {
-    "id": "8693267a-dfbb-4368-8813-d63e338252f9"
+    "id": "8693267a-dfbb-4368-8813-d63e338252f9",
+    "name": "foto_profil.jpg",
+    "size": "2.50 MB"
   }
 }
 ```
+
+---
+
+### 4.10 Informasi Kuota Penyimpanan Pengguna (User Storage Info)
+Mengambil informasi pemakaian kapasitas, sisa kuota, dan persentase penggunaan untuk akun user yang sedang aktif. Sangat ideal untuk menampilkan storage indicator / progress bar di aplikasi Android.
+
+- **URL**: `/api/v1/user/storage`
+- **Method**: `GET`
+- **Auth**: `X-API-Key` (Wajib)
+- **Contoh Respons (200 OK)**:
+```json
+{
+  "success": true,
+  "message": "Informasi kuota penyimpanan pengguna",
+  "data": {
+    "user_id": "usr_a1b2c3d4",
+    "username": "budi_santoso",
+    "role": "user",
+    "quota_bytes": 1048576000,
+    "quota_human": "1000.00 MB",
+    "used_bytes": 262144000,
+    "used_human": "250.00 MB",
+    "free_bytes": 786432000,
+    "free_human": "750.00 MB",
+    "usage_percentage": 25.0,
+    "total_files": 14
+  }
+}
+```
+
+---
+
+### 4.11 Manajemen Pengguna & Kuota (Khusus Admin)
+Endpoint khusus akun Administrator untuk mengelola pendaftaran user, batas kuota, dan API Key.
+
+#### A. Daftar Seluruh Pengguna
+- **URL**: `/api/v1/admin/users`
+- **Method**: `GET`
+- **Auth**: `X-API-Key` (Admin Key)
+
+#### B. Buat Pengguna Baru
+- **URL**: `/api/v1/admin/users`
+- **Method**: `POST`
+- **Auth**: `X-API-Key` (Admin Key)
+- **Request Body (JSON)**:
+```json
+{
+  "username": "budi_santoso",
+  "quota_mb": 500,
+  "api_key": "sk_budi_custom_token", 
+  "role": "user"
+}
+```
+*(Field `api_key`, `quota_mb`, dan `role` bersifat opsional. Jika dikosongkan, API key digenerate otomatis dan kuota mengikuti `DEFAULT_USER_QUOTA_MB`).*
+
+#### C. Ubah Batas Kuota Pengguna
+- **URL**: `/api/v1/admin/users/:id/quota`
+- **Method**: `PUT`
+- **Auth**: `X-API-Key` (Admin Key)
+- **Request Body (JSON)**:
+```json
+{
+  "quota_mb": 2000
+}
+```
+
+#### D. Hapus Pengguna
+- **URL**: `/api/v1/admin/users/:id`
+- **Method**: `DELETE`
+- **Auth**: `X-API-Key` (Admin Key)
+
+#### E. Sinkronisasi Ulang Pemakaian Kuota (Maintenance)
+- **URL**: `/api/v1/admin/users/recalculate`
+- **Method**: `POST`
+- **Auth**: `X-API-Key` (Admin Key)
+
 
 ---
 

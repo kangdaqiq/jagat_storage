@@ -7,7 +7,9 @@ Storage server backend berkecepatan tinggi berbasis **Go (Gin)** yang dirancang 
 - 📤 **Upload Berkas**: Mendukung Single & Multiple file upload (`multipart/form-data`) dengan pembagian folder kategori.
 - 📺 **Media Streaming & Preview**: Kompatibel langsung dengan **Glide**, **Coil**, dan **ExoPlayer** (mendukung header `Range` / HTTP 206 Partial Content).
 - 💾 **Direct Download**: Header `attachment` dengan nama asli berkas untuk Android `DownloadManager`.
-- 🔑 **Autentikasi Aman**: Perlindungan API Key via `X-API-Key` atau `Authorization: Bearer <token>`.
+- 👥 **Multi-User & Storage Quota**: Pembagian kapasitas storage per pengguna dengan batasan kuota (JSON-based zero-dependency) dan isolasi berkas antar user.
+- 📊 **Storage Monitoring**: Endpoint khusus untuk cek sisa kuota, kapasitas terpakai, dan persentase penggunaan (cocok untuk progress bar storage Android).
+- 🔑 **Autentikasi API Key Fleksibel**: Token unik per pengguna via `X-API-Key` atau `Authorization: Bearer <token>`.
 - 🛡️ **Proteksi Path Traversal & Sanitasi**: Aman dari serangan manipulasi path direktori (`../`).
 - 📁 **Penyimpanan Metadata Terpadu**: Menyimpan info ukuran berkas, checksum SHA256, mime-type, dan timestamp tanpa perlu dependensi database eksternal yang berat.
 

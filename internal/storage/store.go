@@ -113,9 +113,16 @@ func sanitizeFolderName(folder string) string {
 }
 
 // SaveUploadedFile menyimpan file multipart ke disk dan mencatat metadata
-func (s *FileStore) SaveUploadedFile(fileHeader *multipart.FileHeader, folder string, customName string, hostURL string) (*model.FileMeta, error) {
+func (s *FileStore) SaveUploadedFile(fileHeader *multipart.FileHeader, folder string, customName string, hostURL string, userID string) (*model.FileMeta, error) {
 	cleanFolder := sanitizeFolderName(folder)
-	targetDir := filepath.Join(s.baseDir, cleanFolder)
+
+	var targetDir string
+	if userID != "" {
+		targetDir = filepath.Join(s.baseDir, userID, cleanFolder)
+	} else {
+		targetDir = filepath.Join(s.baseDir, cleanFolder)
+	}
+
 	if err := os.MkdirAll(targetDir, 0755); err != nil {
 		return nil, fmt.Errorf("gagal membuat folder target: %w", err)
 	}
@@ -189,6 +196,7 @@ func (s *FileStore) SaveUploadedFile(fileHeader *multipart.FileHeader, folder st
 
 	meta := model.FileMeta{
 		ID:            fileID,
+		UserID:        userID,
 		OriginalName:  origName,
 		StoredName:    storedName,
 		ThumbnailName: thumbName,
@@ -224,12 +232,24 @@ func (s *FileStore) GetFile(id string) (*model.FileMeta, error) {
 }
 
 func (s *FileStore) GetPhysicalPath(meta *model.FileMeta) string {
+	if meta.UserID != "" {
+		p := filepath.Join(s.baseDir, meta.UserID, meta.Folder, meta.StoredName)
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
 	return filepath.Join(s.baseDir, meta.Folder, meta.StoredName)
 }
 
 // GetPhysicalThumbnailPath mengambil path file thumbnail di disk
 func (s *FileStore) GetPhysicalThumbnailPath(meta *model.FileMeta) (string, string, error) {
 	if meta.ThumbnailName != "" {
+		if meta.UserID != "" {
+			p := filepath.Join(s.baseDir, meta.UserID, meta.Folder, meta.ThumbnailName)
+			if _, err := os.Stat(p); err == nil {
+				return p, "image/jpeg", nil
+			}
+		}
 		p := filepath.Join(s.baseDir, meta.Folder, meta.ThumbnailName)
 		if _, err := os.Stat(p); err == nil {
 			return p, "image/jpeg", nil
@@ -238,7 +258,7 @@ func (s *FileStore) GetPhysicalThumbnailPath(meta *model.FileMeta) (string, stri
 
 	// Jika file asli adalah gambar, langsung gunakan file aslinya
 	if IsImageFile(meta.MimeType, meta.Extension) {
-		p := filepath.Join(s.baseDir, meta.Folder, meta.StoredName)
+		p := s.GetPhysicalPath(meta)
 		if _, err := os.Stat(p); err == nil {
 			return p, meta.MimeType, nil
 		}
@@ -247,12 +267,15 @@ func (s *FileStore) GetPhysicalThumbnailPath(meta *model.FileMeta) (string, stri
 	return "", "", ErrThumbnailNotFound
 }
 
-func (s *FileStore) ListFiles(folder, search string, page, limit int) ([]model.FileMeta, int) {
+func (s *FileStore) ListFiles(userID, folder, search string, page, limit int) ([]model.FileMeta, int) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	var filtered []model.FileMeta
 	for _, f := range s.files {
+		if userID != "" && f.UserID != userID {
+			continue
+		}
 		if folder != "" && !strings.EqualFold(f.Folder, folder) {
 			continue
 		}
@@ -288,29 +311,64 @@ func (s *FileStore) ListFiles(folder, search string, page, limit int) ([]model.F
 	return filtered[start:end], total
 }
 
-func (s *FileStore) DeleteFile(id string) error {
+func (s *FileStore) CountFilesByUser(userID string) int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	count := 0
+	for _, f := range s.files {
+		if userID == "" || f.UserID == userID {
+			count++
+		}
+	}
+	return count
+}
+
+func (s *FileStore) GetTotalBytesByUser(userID string) int64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var total int64
+	for _, f := range s.files {
+		if userID == "" || f.UserID == userID {
+			total += f.Size
+		}
+	}
+	return total
+}
+
+func (s *FileStore) DeleteFile(id string) (*model.FileMeta, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	meta, exists := s.files[id]
 	if !exists {
-		return ErrFileNotFound
+		return nil, ErrFileNotFound
 	}
 
 	filePath := filepath.Join(s.baseDir, meta.Folder, meta.StoredName)
+	if meta.UserID != "" {
+		userPath := filepath.Join(s.baseDir, meta.UserID, meta.Folder, meta.StoredName)
+		if _, err := os.Stat(userPath); err == nil {
+			filePath = userPath
+		}
+	}
+
 	if err := os.Remove(filePath); err != nil && !os.IsNotExist(err) {
-		return err
+		return nil, err
 	}
 
 	// Hapus thumbnail jika ada
 	if meta.ThumbnailName != "" {
-		thumbPath := filepath.Join(s.baseDir, meta.Folder, meta.ThumbnailName)
-		_ = os.Remove(thumbPath)
+		if meta.UserID != "" {
+			_ = os.Remove(filepath.Join(s.baseDir, meta.UserID, meta.Folder, meta.ThumbnailName))
+		}
+		_ = os.Remove(filepath.Join(s.baseDir, meta.Folder, meta.ThumbnailName))
 	}
 
 	delete(s.files, id)
 	_ = s.saveMetadata()
-	return nil
+	return &meta, nil
 }
 
 // IsVideoFile mengecek apakah MIME type atau ekstensi adalah format video

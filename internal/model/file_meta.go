@@ -5,6 +5,7 @@ import "time"
 // FileMeta menyimpan informasi metadata berkas yang diunggah
 type FileMeta struct {
 	ID           string    `json:"id"`
+	UserID       string    `json:"user_id,omitempty"`
 	OriginalName string    `json:"original_name"`
 	StoredName   string    `json:"stored_name"`
 	Folder       string    `json:"folder"`

@@ -8,13 +8,16 @@ import (
 )
 
 type Config struct {
-	Port                  string
-	Host                  string
-	BaseURL               string
-	UploadDir             string
-	MaxUploadSizeMB       int64
-	APIKey                string
-	RequireAuthForUpload  bool
+	Port                   string
+	Host                   string
+	BaseURL                string
+	UploadDir              string
+	MaxUploadSizeMB        int64
+	APIKey                 string
+	AdminAPIKey            string
+	DefaultUserQuotaMB     int64
+	UsersFile              string
+	RequireAuthForUpload   bool
 	RequireAuthForDownload bool
 }
 
@@ -34,17 +37,30 @@ func LoadConfig() *Config {
 	}
 
 	apiKey := getEnv("API_KEY", "android-storage-secret-key")
+	adminKey := getEnv("ADMIN_API_KEY", apiKey)
+
+	quotaStr := getEnv("DEFAULT_USER_QUOTA_MB", "1000") // 1000 MB (1 GB)
+	defaultQuota, err := strconv.ParseInt(quotaStr, 10, 64)
+	if err != nil || defaultQuota < 0 {
+		defaultQuota = 1000
+	}
+
+	usersFile := getEnv("USERS_FILE", "")
+
 	authUpload := getEnvAsBool("REQUIRE_AUTH_FOR_UPLOAD", true)
 	authDownload := getEnvAsBool("REQUIRE_AUTH_FOR_DOWNLOAD", false)
 
 	return &Config{
-		Port:                  port,
-		Host:                  host,
-		BaseURL:               baseURL,
-		UploadDir:             uploadDir,
-		MaxUploadSizeMB:       maxSize,
-		APIKey:                apiKey,
-		RequireAuthForUpload:  authUpload,
+		Port:                   port,
+		Host:                   host,
+		BaseURL:                baseURL,
+		UploadDir:              uploadDir,
+		MaxUploadSizeMB:        maxSize,
+		APIKey:                 apiKey,
+		AdminAPIKey:            adminKey,
+		DefaultUserQuotaMB:     defaultQuota,
+		UsersFile:              usersFile,
+		RequireAuthForUpload:   authUpload,
 		RequireAuthForDownload: authDownload,
 	}
 }

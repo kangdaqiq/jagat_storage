@@ -9,20 +9,23 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"storage_server/internal/config"
+	"storage_server/internal/middleware"
 	"storage_server/internal/model"
 	"storage_server/internal/storage"
 	"storage_server/internal/utils"
 )
 
 type FileHandler struct {
-	store *storage.FileStore
-	cfg   *config.Config
+	store     *storage.FileStore
+	userStore *storage.UserStore
+	cfg       *config.Config
 }
 
-func NewFileHandler(store *storage.FileStore, cfg *config.Config) *FileHandler {
+func NewFileHandler(store *storage.FileStore, userStore *storage.UserStore, cfg *config.Config) *FileHandler {
 	return &FileHandler{
-		store: store,
-		cfg:   cfg,
+		store:     store,
+		userStore: userStore,
+		cfg:       cfg,
 	}
 }
 
@@ -38,7 +41,7 @@ func (h *FileHandler) resolveBaseURL(c *gin.Context) string {
 	return fmt.Sprintf("%s://%s", scheme, c.Request.Host)
 }
 
-// UploadSingle mengunggah satu berkas
+// UploadSingle mengunggah satu berkas dengan pengecekan kuota user
 func (h *FileHandler) UploadSingle(c *gin.Context) {
 	fileHeader, err := c.FormFile("file")
 	if err != nil {
@@ -48,24 +51,47 @@ func (h *FileHandler) UploadSingle(c *gin.Context) {
 
 	maxBytes := h.cfg.MaxUploadSizeMB * 1024 * 1024
 	if fileHeader.Size > maxBytes {
-		utils.SendError(c, http.StatusRequestEntityTooLarge, fmt.Sprintf("Ukuran file melebihi batas maksimum (%d MB)", h.cfg.MaxUploadSizeMB), nil)
+		utils.SendError(c, http.StatusRequestEntityTooLarge, fmt.Sprintf("Ukuran file melebihi batas maksimum per file (%d MB)", h.cfg.MaxUploadSizeMB), nil)
 		return
+	}
+
+	user := middleware.GetCurrentUser(c)
+	var userID string
+	if user != nil {
+		userID = user.ID
+		// Cek kuota penyimpanan pengguna
+		if err := h.userStore.CheckQuota(user.ID, fileHeader.Size); err != nil {
+			info, _ := h.userStore.GetStorageInfo(user.ID, 0)
+			utils.SendError(c, http.StatusRequestEntityTooLarge, "Kapasitas penyimpanan user telah melebihi batas kuota (Quota Exceeded)", gin.H{
+				"quota":          info.QuotaHuman,
+				"used":           info.UsedHuman,
+				"remaining":      info.FreeHuman,
+				"incoming_file":  utils.FormatFileSize(fileHeader.Size),
+				"max_quota_byte": info.QuotaBytes,
+			})
+			return
+		}
 	}
 
 	folder := c.DefaultPostForm("folder", "general")
 	customName := c.PostForm("name")
 	baseURL := h.resolveBaseURL(c)
 
-	meta, err := h.store.SaveUploadedFile(fileHeader, folder, customName, baseURL)
+	meta, err := h.store.SaveUploadedFile(fileHeader, folder, customName, baseURL, userID)
 	if err != nil {
 		utils.SendError(c, http.StatusInternalServerError, "Gagal menyimpan file ke storage", err.Error())
 		return
 	}
 
+	// Update pemakaian kapasitas pengguna
+	if userID != "" {
+		_ = h.userStore.UpdateUsage(userID, meta.Size)
+	}
+
 	utils.SendSuccess(c, http.StatusCreated, "File berhasil diunggah", meta)
 }
 
-// UploadMultiple mengunggah beberapa berkas sekaligus
+// UploadMultiple mengunggah beberapa berkas sekaligus dengan validasi kuota
 func (h *FileHandler) UploadMultiple(c *gin.Context) {
 	form, err := c.MultipartForm()
 	if err != nil {
@@ -75,7 +101,6 @@ func (h *FileHandler) UploadMultiple(c *gin.Context) {
 
 	files := form.File["files"]
 	if len(files) == 0 {
-		// Cek fallback jika client mengirim dengan key "file" berulang
 		files = form.File["file"]
 	}
 
@@ -84,25 +109,53 @@ func (h *FileHandler) UploadMultiple(c *gin.Context) {
 		return
 	}
 
+	user := middleware.GetCurrentUser(c)
+	var userID string
+	if user != nil {
+		userID = user.ID
+		var totalBatchBytes int64
+		for _, fh := range files {
+			totalBatchBytes += fh.Size
+		}
+
+		if err := h.userStore.CheckQuota(user.ID, totalBatchBytes); err != nil {
+			info, _ := h.userStore.GetStorageInfo(user.ID, 0)
+			utils.SendError(c, http.StatusRequestEntityTooLarge, "Total ukuran batch melebihi sisa kuota penyimpanan Anda", gin.H{
+				"quota":          info.QuotaHuman,
+				"used":           info.UsedHuman,
+				"remaining":      info.FreeHuman,
+				"batch_size":     utils.FormatFileSize(totalBatchBytes),
+				"max_quota_byte": info.QuotaBytes,
+			})
+			return
+		}
+	}
+
 	folder := c.DefaultPostForm("folder", "general")
 	baseURL := h.resolveBaseURL(c)
 	maxBytes := h.cfg.MaxUploadSizeMB * 1024 * 1024
 
 	var uploaded []model.FileMeta
 	var uploadErrors []string
+	var totalUploadedBytes int64
 
 	for _, fileHeader := range files {
 		if fileHeader.Size > maxBytes {
-			uploadErrors = append(uploadErrors, fmt.Sprintf("%s: ukuran melebihi batas", fileHeader.Filename))
+			uploadErrors = append(uploadErrors, fmt.Sprintf("%s: ukuran melebihi batas (%d MB)", fileHeader.Filename, h.cfg.MaxUploadSizeMB))
 			continue
 		}
 
-		meta, err := h.store.SaveUploadedFile(fileHeader, folder, "", baseURL)
+		meta, err := h.store.SaveUploadedFile(fileHeader, folder, "", baseURL, userID)
 		if err != nil {
 			uploadErrors = append(uploadErrors, fmt.Sprintf("%s: gagal disimpan (%v)", fileHeader.Filename, err))
 			continue
 		}
 		uploaded = append(uploaded, *meta)
+		totalUploadedBytes += meta.Size
+	}
+
+	if userID != "" && totalUploadedBytes > 0 {
+		_ = h.userStore.UpdateUsage(userID, totalUploadedBytes)
 	}
 
 	response := gin.H{
@@ -117,14 +170,24 @@ func (h *FileHandler) UploadMultiple(c *gin.Context) {
 	utils.SendSuccess(c, http.StatusCreated, fmt.Sprintf("%d dari %d file berhasil diunggah", len(uploaded), len(files)), response)
 }
 
-// ListFiles mengambil daftar file dengan filter & pagination
+// ListFiles mengambil daftar file dengan filter & pagination (diisolasi per user)
 func (h *FileHandler) ListFiles(c *gin.Context) {
 	folder := c.Query("folder")
 	search := c.Query("search")
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
 
-	files, total := h.store.ListFiles(folder, search, page, limit)
+	user := middleware.GetCurrentUser(c)
+	var filterUserID string
+	if user != nil {
+		if user.Role == "admin" {
+			filterUserID = c.Query("user_id") // Admin bisa filter user_id tertentu atau kosong untuk semua
+		} else {
+			filterUserID = user.ID // User biasa hanya melihat miliknya sendiri
+		}
+	}
+
+	files, total := h.store.ListFiles(filterUserID, folder, search, page, limit)
 
 	// Pastikan URL selalu up to date dengan host saat ini
 	baseURL := h.resolveBaseURL(c)
@@ -154,6 +217,13 @@ func (h *FileHandler) GetFileInfo(c *gin.Context) {
 			return
 		}
 		utils.SendError(c, http.StatusInternalServerError, "Gagal mengambil data file", err.Error())
+		return
+	}
+
+	// Cek hak akses jika user login
+	user := middleware.GetCurrentUser(c)
+	if user != nil && user.Role != "admin" && meta.UserID != "" && meta.UserID != user.ID {
+		utils.SendError(c, http.StatusForbidden, "Akses ditolak: Anda tidak memiliki izin untuk melihat file ini", nil)
 		return
 	}
 
@@ -235,10 +305,28 @@ func (h *FileHandler) DownloadFile(c *gin.Context) {
 	http.ServeFile(c.Writer, c.Request, filePath)
 }
 
-// DeleteFile menghapus berkas dari disk dan metadata
+// DeleteFile menghapus berkas dari disk dan metadata serta mengurangi kuota pemakaian user
 func (h *FileHandler) DeleteFile(c *gin.Context) {
 	id := c.Param("id")
-	if err := h.store.DeleteFile(id); err != nil {
+
+	meta, err := h.store.GetFile(id)
+	if err != nil {
+		if errors.Is(err, storage.ErrFileNotFound) {
+			utils.SendError(c, http.StatusNotFound, "File tidak ditemukan", nil)
+			return
+		}
+		utils.SendError(c, http.StatusInternalServerError, "Gagal memeriksa file", err.Error())
+		return
+	}
+
+	user := middleware.GetCurrentUser(c)
+	if user != nil && user.Role != "admin" && meta.UserID != "" && meta.UserID != user.ID {
+		utils.SendError(c, http.StatusForbidden, "Akses ditolak: Anda tidak memiliki izin untuk menghapus file ini", nil)
+		return
+	}
+
+	deletedMeta, err := h.store.DeleteFile(id)
+	if err != nil {
 		if errors.Is(err, storage.ErrFileNotFound) {
 			utils.SendError(c, http.StatusNotFound, "File tidak ditemukan", nil)
 			return
@@ -247,5 +335,13 @@ func (h *FileHandler) DeleteFile(c *gin.Context) {
 		return
 	}
 
-	utils.SendSuccess(c, http.StatusOK, "File berhasil dihapus", gin.H{"id": id})
+	if deletedMeta != nil && deletedMeta.UserID != "" {
+		_ = h.userStore.UpdateUsage(deletedMeta.UserID, -deletedMeta.Size)
+	}
+
+	utils.SendSuccess(c, http.StatusOK, "File berhasil dihapus", gin.H{
+		"id":   id,
+		"name": meta.OriginalName,
+		"size": meta.HumanSize,
+	})
 }
